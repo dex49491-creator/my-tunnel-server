@@ -1,33 +1,42 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-import uvicorn
 import os
+import pathlib
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
+import uvicorn
 
-# ایمپورت تابع اصلی پروکسی از کتابخانه esp32-tunnel
-# این تابع وظیفه هدایت درخواست‌ها به ESP8266 را بر عهده دارد
-from api.tunnel import tunnel_proxy  # type: ignore
+PORT = int(os.environ.get("PORT", 10000))
+_frontend = pathlib.Path(__file__).parent / "frontend"
 
-app = FastAPI(title="esp32-tunnel")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print(f"Server running on port {PORT}")
+    yield
 
-# مسیر WebSocket برای اتصال ESP8266
-# این مسیر توسط خود کتابخانه در ESP8266 فراخوانی می‌شود
-# و نیازی به تعریف دستی ندارد، اما برای اطمینان از وجود آن مطمئن می‌شویم.
+app = FastAPI(title="esp32-tunnel", lifespan=lifespan)
 
+# ---- مسیر پروکسی (Catch-all) ----
+from api.tunnel import tunnel_proxy
+
+_ALL_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+
+@app.api_route("/{tid}/{path:path}", methods=_ALL_METHODS)
+async def proxy_path(tid: str, path: str, request: Request):
+    return await tunnel_proxy(tid, path, request)
+
+@app.api_route("/{tid}", methods=_ALL_METHODS)
+async def proxy_root(tid: str, request: Request):
+    return await tunnel_proxy(tid, "", request)
+
+# ---- سلامت سرویس ----
 @app.get("/api/status")
 async def health_check():
     return {"status": "ok", "message": "Tunnel server is running"}
 
-# مسیر اصلی برای هدایت درخواست‌های کاربران به ESP8266
-# وقتی شما آدرس https://bazkon.onrender.com/bazkon/ را باز می‌کنید،
-# این تابع فراخوانی می‌شود و درخواست را به دستگاه شما می‌فرستد.
-@app.api_route("/{tid}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-async def proxy_path(tid: str, path: str, request: Request):
-    return await tunnel_proxy(tid, path, request)
-
-@app.api_route("/{tid}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-async def proxy_root(tid: str, request: Request):
-    return await tunnel_proxy(tid, "", request)
+# ---- داشبورد (اختیاری) ----
+if _frontend.exists():
+    app.mount("/", StaticFiles(directory=_frontend, html=True), name="frontend")
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT,
+                ws_ping_interval=20, ws_ping_timeout=30)
