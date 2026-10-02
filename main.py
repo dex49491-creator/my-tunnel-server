@@ -1,33 +1,33 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 import uvicorn
-import asyncio
+import os
 
-app = FastAPI()
+# ایمپورت تابع اصلی پروکسی از کتابخانه esp32-tunnel
+# این تابع وظیفه هدایت درخواست‌ها به ESP8266 را بر عهده دارد
+from api.tunnel import tunnel_proxy  # type: ignore
 
-# دیکشنری برای نگهداری اتصالات WebSocket دستگاه‌ها
-devices = {}
+app = FastAPI(title="esp32-tunnel")
 
-@app.get("/")
-async def root():
-    return {"status": "Tunnel server is running"}
+# مسیر WebSocket برای اتصال ESP8266
+# این مسیر توسط خود کتابخانه در ESP8266 فراخوانی می‌شود
+# و نیازی به تعریف دستی ندارد، اما برای اطمینان از وجود آن مطمئن می‌شویم.
 
-@app.websocket("/ws/{device_id}")
-async def websocket_endpoint(websocket: WebSocket, device_id: str):
-    await websocket.accept()
-    devices[device_id] = websocket
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        if device_id in devices:
-            del devices[device_id]
+@app.get("/api/status")
+async def health_check():
+    return {"status": "ok", "message": "Tunnel server is running"}
 
-@app.api_route("/{device_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def proxy(device_id: str, path: str, request):
-    # این بخش در نسخه ساده شده است. در عمل باید درخواست را به دستگاه هدایت کند.
-    # برای شروع، همین کافی است تا سرور بالا بیاید.
-    return {"message": f"Proxy request to {device_id} for path {path}"}
+# مسیر اصلی برای هدایت درخواست‌های کاربران به ESP8266
+# وقتی شما آدرس https://bazkon.onrender.com/bazkon/ را باز می‌کنید،
+# این تابع فراخوانی می‌شود و درخواست را به دستگاه شما می‌فرستد.
+@app.api_route("/{tid}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def proxy_path(tid: str, path: str, request: Request):
+    return await tunnel_proxy(tid, path, request)
+
+@app.api_route("/{tid}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def proxy_root(tid: str, request: Request):
+    return await tunnel_proxy(tid, "", request)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
